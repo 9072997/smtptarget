@@ -24,11 +24,11 @@ type Target struct {
 	timeout  time.Duration
 
 	client           *smtp.Client
-	mutex            *sync.Mutex
-	lastUse          *time.Time
+	mutex            sync.Mutex
+	lastUse          time.Time
 	possibleTimeout  chan interface{}
-	possibleTimeouts *sync.WaitGroup
-	closed           *bool
+	possibleTimeouts sync.WaitGroup
+	closed           bool
 }
 
 // New creates a new Target to which you can send mail. host should be a
@@ -37,16 +37,13 @@ type Target struct {
 // long the connection will be allowed to sit idle before it is
 // disconnected. It will automatically re-connect next time you call
 // SendMail().
-func New(addr, username, password string, timeout time.Duration) Target {
+func New(addr, username, password string, timeout time.Duration) *Target {
 	t := Target{
 		addr:            addr,
 		username:        username,
 		password:        password,
 		timeout:         timeout,
-		mutex:           new(sync.Mutex),
-		lastUse:         new(time.Time),
 		possibleTimeout: make(chan interface{}),
-		closed:          new(bool),
 	}
 
 	// start a thread that will watch for possible timeouts
@@ -62,7 +59,7 @@ func New(addr, username, password string, timeout time.Duration) Target {
 			// of sending an email
 			t.mutex.Lock()
 
-			idleTime := time.Now().Sub(*t.lastUse)
+			idleTime := time.Now().Sub(t.lastUse)
 			if idleTime > t.timeout {
 				_ = t.disconnect()
 			}
@@ -71,24 +68,24 @@ func New(addr, username, password string, timeout time.Duration) Target {
 		}
 	}()
 
-	return t
+	return &t
 }
 
 // Close the connection to the SMTP server and end the possibleTimeout
 // watcher thread. The Target cannot be used after this. You must make a new
 // one.
-func (t Target) Close() error {
+func (t *Target) Close() error {
 	// can't be sending mail while we disconnect
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	// don't try to close a channel twice
-	if *t.closed {
+	if t.closed {
 		return errors.New("Target is already closed")
 	}
 
 	// so we know the possibleTimeout watcher is dead or dieing
-	*t.closed = true
+	t.closed = true
 
 	// register shutdown for the possibleTimeout watcher
 	go func() {
@@ -104,14 +101,14 @@ func (t Target) Close() error {
 // SendMail works like smtp.SendMail() except that it uses the connection
 // from the Target. It will first re-establish the connection if the
 // connection is unhealthy or not connected.
-func (t Target) SendMail(from string, to []string, msg []byte) error {
+func (t *Target) SendMail(from string, to []string, msg []byte) error {
 	// can't send more than one message at a time
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
 	// if the target is closed there is no possibleTimeout watcher, so we
 	// don't want to open a new connection
-	if *t.closed {
+	if t.closed {
 		return errors.New("Target is closed")
 	}
 
@@ -145,7 +142,7 @@ func (t Target) SendMail(from string, to []string, msg []byte) error {
 	}
 
 	// reset the idle disconnect timer
-	*t.lastUse = time.Now()
+	t.lastUse = time.Now()
 	// register a possible timeout some time from now
 	t.possibleTimeouts.Add(1)
 	go func() {
@@ -160,7 +157,7 @@ func (t Target) SendMail(from string, to []string, msg []byte) error {
 // ensure there is a functioning connection to the SMTP server and that it
 // is in a known state
 // NOTE: this is NOT threadsafe
-func (t Target) reset() (err error) {
+func (t *Target) reset() (err error) {
 	switch {
 	// we have a connection, but something is wrong with it
 	case t.client != nil && t.client.Noop() != nil:
@@ -214,7 +211,7 @@ func (t Target) reset() (err error) {
 
 // close the connection to the SMTP server
 // NOTE: this is NOT threadsafe
-func (t Target) disconnect() error {
+func (t *Target) disconnect() error {
 	if t.client == nil {
 		return nil
 	}
