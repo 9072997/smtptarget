@@ -113,10 +113,13 @@ func (t *Target) SendMail(from string, to []string, msg []byte) error {
 	}
 
 	// ensure the client is connected and in a known state
-	t.reset()
+	err := t.reset()
+	if err != nil {
+		return err
+	}
 
 	// set from and to addresses
-	err := t.client.Mail(from)
+	err = t.client.Mail(from)
 	if err != nil {
 		return err
 	}
