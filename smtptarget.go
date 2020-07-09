@@ -9,6 +9,7 @@ package smtptarget
 import (
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"net/smtp"
 	"os"
@@ -29,6 +30,7 @@ type Target struct {
 	possibleTimeout  chan interface{}
 	possibleTimeouts sync.WaitGroup
 	closed           bool
+	keyLogWriter     io.WriteCloser
 }
 
 // New creates a new Target to which you can send mail. host should be a
@@ -71,6 +73,30 @@ func New(addr, username, password string, timeout time.Duration) *Target {
 	return &t
 }
 
+// EnableKeyLog will start writing TLS secrets to a file. See:
+// https://wiki.wireshark.org/TLS#Using_the_.28Pre.29-Master-Secret
+func (t *Target) EnableKeyLog(filename string) (err error) {
+	// this will force a disconnect, so we can't be in the middle of sending
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+
+	// open the file
+	t.keyLogWriter, err = os.OpenFile(
+		filename,
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+		0600,
+	)
+	if err != nil {
+		return err
+	}
+
+	// we can't change the TLS settings on the current connection, so force
+	// a new one
+	_ = t.disconnect()
+
+	return nil
+}
+
 // Close the connection to the SMTP server and end the possibleTimeout
 // watcher thread. The Target cannot be used after this. You must make a new
 // one.
@@ -86,6 +112,11 @@ func (t *Target) Close() error {
 
 	// so we know the possibleTimeout watcher is dead or dieing
 	t.closed = true
+
+	// close the KeyFile if we opened one
+	if t.keyLogWriter != nil {
+		t.Close()
+	}
 
 	// register shutdown for the possibleTimeout watcher
 	go func() {
@@ -190,7 +221,10 @@ func (t *Target) reset() (err error) {
 		if err != nil {
 			return err
 		}
-		err = t.client.StartTLS(&tls.Config{ServerName: serverHost})
+		err = t.client.StartTLS(&tls.Config{
+			ServerName:   serverHost,
+			KeyLogWriter: t.keyLogWriter,
+		})
 		if err != nil {
 			return err
 		}
