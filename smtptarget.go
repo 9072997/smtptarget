@@ -115,7 +115,7 @@ func (t *Target) Close() error {
 
 	// close the KeyFile if we opened one
 	if t.keyLogWriter != nil {
-		t.Close()
+		t.keyLogWriter.Close()
 	}
 
 	// register shutdown for the possibleTimeout watcher
